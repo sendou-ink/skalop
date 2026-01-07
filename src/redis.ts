@@ -1,4 +1,3 @@
-import { Redis } from "ioredis";
 import invariant from "tiny-invariant";
 
 invariant(
@@ -6,4 +5,4 @@ invariant(
   "You must set the REDIS_URL environment variable"
 );
 
-export const redis = new Redis(process.env["REDIS_URL"]);
+export const redis = new Bun.RedisClient(process.env["REDIS_URL"]);
