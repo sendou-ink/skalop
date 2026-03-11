@@ -7,3 +7,7 @@ export function msgShouldBePersisted(msg: ChatMessage) {
 
   return true;
 }
+
+export function isRoomExpired(expiresAt: number): boolean {
+  return Date.now() > expiresAt;
+}

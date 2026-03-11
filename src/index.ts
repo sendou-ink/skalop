@@ -1,27 +1,130 @@
+import type { ServerWebSocket } from "bun";
 import type { ChatMessage } from "./services/Chat";
 import { extractSession, getAuthenticatedUserId } from "./session";
 import * as Chat from "./services/Chat";
+import * as Room from "./services/Room";
+import type { RoomInfo } from "./services/Room";
 import invariant from "tiny-invariant";
-import { msgShouldBePersisted } from "./utils";
+import { msgShouldBePersisted, isRoomExpired } from "./utils";
 
 const MESSAGE_MAX_LENGTH = 200;
 
+type WsData = { authToken: string; userId: number };
+
+/** userId -> set of active websocket connections */
+const connectionMap = new Map<number, Set<ServerWebSocket<WsData>>>();
+
+function addConnection(userId: number, ws: ServerWebSocket<WsData>) {
+  let connections = connectionMap.get(userId);
+  if (!connections) {
+    connections = new Set();
+    connectionMap.set(userId, connections);
+  }
+  connections.add(ws);
+}
+
+function removeConnection(userId: number, ws: ServerWebSocket<WsData>) {
+  const connections = connectionMap.get(userId);
+  if (!connections) return;
+  connections.delete(ws);
+  if (connections.size === 0) {
+    connectionMap.delete(userId);
+  }
+}
+
+async function buildRoomInfo(chatCode: string): Promise<RoomInfo | null> {
+  const metadata = await Room.getMetadata(chatCode);
+  if (!metadata) return null;
+
+  const [lastMessageTimestamp, totalMessageCount] = await Promise.all([
+    Chat.getLastMessageTimestamp(chatCode),
+    Chat.getMessageCount(chatCode),
+  ]);
+
+  return { chatCode, metadata, lastMessageTimestamp, totalMessageCount };
+}
+
+/** Publish a message to the room channel (for observers) and to each participant's user channel */
+async function publishToRoom(
+  server: ReturnType<typeof Bun.serve<WsData>>,
+  chatCode: string,
+  data: string
+) {
+  // Room channel for non-participant observers (staff/TOs)
+  server.publish(chatCode, data);
+
+  // User channels for participants
+  const metadata = await Room.getMetadata(chatCode);
+  if (metadata) {
+    for (const userId of metadata.participantUserIds) {
+      server.publish(`user__${userId}`, data);
+    }
+  }
+}
+
 invariant(process.env["SKALOP_TOKEN"], "Missing env var: SKALOP_TOKEN");
-const server = Bun.serve<{ authToken: string; rooms: string[] }>({
+const server = Bun.serve<WsData>({
   async fetch(req, server) {
+    const url = new URL(req.url);
+
     // handle messages sent by sendou.ink backend
-    if (new URL(req.url).pathname === "/system") {
+    if (url.pathname === "/system") {
       if (req.headers.get("Skalop-Token") !== process.env["SKALOP_TOKEN"]) {
         return new Response(null, { status: 401 });
       }
 
-      const msgArr = (await req.json()) as ChatMessage[];
+      const body = await req.json();
 
-      for (const msg of msgArr) {
-        if (msgShouldBePersisted(msg)) await Chat.saveMessage(msg);
+      const { action } = body as { action: string };
 
-        server.publish(msg.room, JSON.stringify(msg));
+      if (action === "setMetadata") {
+        const { chatCode, metadata } = body as {
+          chatCode: string;
+          metadata: Room.RoomMetadata;
+        };
+
+        await Room.setMetadata(chatCode, metadata);
+
+        // Update reverse index for each participant
+        for (const userId of metadata.participantUserIds) {
+          await Room.addUserToRoom(userId, chatCode);
+        }
+
+        // Notify connected participants
+        const roomInfo = await buildRoomInfo(chatCode);
+        if (roomInfo) {
+          for (const userId of metadata.participantUserIds) {
+            const connections = connectionMap.get(userId);
+            if (!connections) continue;
+
+            for (const ws of connections) {
+              ws.send(
+                JSON.stringify({
+                  event: "ROOM_JOINED",
+                  room: roomInfo,
+                })
+              );
+            }
+          }
+        }
+
+        return new Response(JSON.stringify({ ok: true }), {
+          headers: { "Content-Type": "application/json" },
+        });
       }
+
+      if (action === "sendMessage") {
+        const { messages } = body as { messages: ChatMessage[] };
+
+        for (const msg of messages) {
+          if (msgShouldBePersisted(msg)) await Chat.saveMessage(msg);
+          await publishToRoom(server, msg.room, JSON.stringify(msg));
+        }
+
+        return new Response(null, { status: 200 });
+      }
+
+      return new Response(null, { status: 400 });
     }
 
     const session = extractSession(req.headers.get("Cookie"));
@@ -30,62 +133,122 @@ const server = Bun.serve<{ authToken: string; rooms: string[] }>({
       return new Response(null, { status: 401 });
     }
 
+    const userId = await getAuthenticatedUserId(session);
+    if (!userId) {
+      console.warn("No userId found from session");
+      return new Response(null, { status: 401 });
+    }
+
     const success = server.upgrade(req, {
       data: {
         authToken: session,
-        rooms: new URL(req.url).searchParams.getAll("room"),
+        userId,
       },
     });
     if (success) {
-      // Bun automatically returns a 101 Switching Protocols
-      // if the upgrade succeeds
       return undefined;
     }
 
     console.warn("Upgrade failed");
-
-    // handle HTTP request normally
     return new Response(null, { status: 405 });
   },
   websocket: {
     async open(ws) {
-      for (const room of ws.data.rooms) {
-        ws.subscribe(room);
+      const { userId } = ws.data;
+
+      addConnection(userId, ws);
+
+      // Subscribe to personal channel
+      ws.subscribe(`user__${userId}`);
+
+      // Look up user's rooms (participants receive messages via user channel, not room channel)
+      const roomCodes = await Room.getUserRoomCodes(userId);
+      const roomInfos: RoomInfo[] = [];
+
+      for (const chatCode of roomCodes) {
+        const info = await buildRoomInfo(chatCode);
+        if (!info) continue;
+        if (isRoomExpired(info.metadata.expiresAt)) continue;
+
+        roomInfos.push(info);
       }
 
-      const messages = await Promise.all(ws.data.rooms.map(Chat.getMessages));
-      const flattenedMessages = messages.flat();
-
-      if (flattenedMessages.length > 0) {
-        ws.send(JSON.stringify(flattenedMessages));
-      }
+      // Send initial payload with room list (no message history)
+      ws.send(JSON.stringify({ rooms: roomInfos }));
     },
     publishToSelf: true,
     async message(ws, message) {
-      // it's a ping to keep the connection alive
+      // Ping to keep connection alive
       if (message === "") return;
 
-      const userId = await getAuthenticatedUserId(ws.data.authToken);
-      invariant(userId, "User must be authenticated to send messages");
+      const parsed = JSON.parse(message as string);
+      const { event } = parsed;
 
-      const { id, contents, room } = JSON.parse(message as string);
+      if (event === "CHAT_HISTORY") {
+        const { chatCode } = parsed;
+        const messages = await Chat.getMessages(chatCode);
+        ws.send(JSON.stringify({ event: "CHAT_HISTORY", chatCode, messages }));
+        return;
+      }
 
-      const chatMessage: ChatMessage = {
-        id,
-        contents: contents.slice(0, MESSAGE_MAX_LENGTH),
-        userId: Number(userId),
-        room,
-        timestamp: Date.now(),
-      };
+      if (event === "SUBSCRIBE") {
+        const { chatCode } = parsed;
+        ws.subscribe(chatCode);
+        const [messages, metadata] = await Promise.all([
+          Chat.getMessages(chatCode),
+          Room.getMetadata(chatCode),
+        ]);
+        ws.send(
+          JSON.stringify({ event: "CHAT_HISTORY", chatCode, messages, metadata })
+        );
+        return;
+      }
 
-      await Chat.saveMessage(chatMessage);
+      if (event === "UNSUBSCRIBE") {
+        const { chatCode } = parsed;
+        ws.unsubscribe(chatCode);
+        return;
+      }
 
-      ws.publish(room, JSON.stringify(chatMessage));
+      if (event === "MESSAGE") {
+        const { chatCode, id, contents } = parsed;
+
+        // Check room isn't expired
+        const metadata = await Room.getMetadata(chatCode);
+        if (metadata && isRoomExpired(metadata.expiresAt)) {
+          ws.send(
+            JSON.stringify({ event: "ERROR", message: "Room has expired" })
+          );
+          return;
+        }
+
+        const chatMessage: ChatMessage = {
+          id,
+          contents: contents.slice(0, MESSAGE_MAX_LENGTH),
+          userId: ws.data.userId,
+          room: chatCode,
+          timestamp: Date.now(),
+        };
+
+        const totalMessageCount = await Chat.saveMessage(chatMessage);
+        const payload = JSON.stringify({ ...chatMessage, totalMessageCount });
+        await publishToRoom(server, chatCode, payload);
+
+        // Echo back to subscriber senders — participants already receive
+        // the message via their user channel in publishToRoom
+        const isParticipant =
+          metadata?.participantUserIds.includes(ws.data.userId) ?? false;
+        if (!isParticipant) {
+          ws.send(payload);
+        }
+        return;
+      }
+
     },
     close(ws) {
-      for (const room of ws.data.rooms) {
-        ws.unsubscribe(room);
-      }
+      const { userId } = ws.data;
+      removeConnection(userId, ws);
+      // Bun auto-unsubscribes from all channels on close
     },
   },
 });
