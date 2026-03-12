@@ -233,14 +233,6 @@ const server = Bun.serve<WsData>({
         const totalMessageCount = await Chat.saveMessage(chatMessage);
         const payload = JSON.stringify({ ...chatMessage, totalMessageCount });
         await publishToRoom(server, chatCode, payload);
-
-        // Echo back to subscriber senders — participants already receive
-        // the message via their user channel in publishToRoom
-        const isParticipant =
-          metadata?.participantUserIds.includes(ws.data.userId) ?? false;
-        if (!isParticipant) {
-          ws.send(payload);
-        }
         return;
       }
 
