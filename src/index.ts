@@ -124,6 +124,30 @@ const server = Bun.serve<WsData>({
         return new Response(null, { status: 200 });
       }
 
+      if (action === "removeRoom") {
+        const { chatCode } = body as { chatCode: string };
+
+        const removedUserIds = await Room.removeRoom(chatCode);
+
+        for (const userId of removedUserIds) {
+          const connections = connectionMap.get(userId);
+          if (!connections) continue;
+
+          for (const ws of connections) {
+            ws.send(
+              JSON.stringify({
+                event: "ROOM_REMOVED",
+                chatCode,
+              })
+            );
+          }
+        }
+
+        return new Response(JSON.stringify({ ok: true }), {
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+
       return new Response(null, { status: 400 });
     }
 

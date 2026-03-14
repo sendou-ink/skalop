@@ -66,7 +66,19 @@ export async function getMetadata(
 }
 
 export async function getUserRoomCodes(userId: number): Promise<string[]> {
-  return redis.smembers(userRoomsKey(userId));
+  const codes = await redis.smembers(userRoomsKey(userId));
+
+  // Prune codes whose room_meta__ key has already been evicted by Redis
+  const stale: string[] = [];
+  for (const code of codes) {
+    const exists = await redis.exists(metaKey(code));
+    if (!exists) stale.push(code);
+  }
+  if (stale.length > 0) {
+    await redis.srem(userRoomsKey(userId), ...stale);
+  }
+
+  return codes.filter((c) => !stale.includes(c));
 }
 
 export async function addUserToRoom(
@@ -81,4 +93,19 @@ export async function removeUserFromRoom(
   chatCode: string
 ): Promise<void> {
   await redis.srem(userRoomsKey(userId), chatCode);
+}
+
+export async function removeRoom(chatCode: string): Promise<number[]> {
+  const metadata = await getMetadata(chatCode);
+  if (!metadata) return [];
+
+  const userIds = metadata.participantUserIds;
+
+  await Promise.all(
+    userIds.map((userId) => removeUserFromRoom(userId, chatCode))
+  );
+
+  await redis.del(metaKey(chatCode));
+
+  return userIds;
 }
