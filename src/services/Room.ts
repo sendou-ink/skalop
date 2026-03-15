@@ -14,6 +14,7 @@ export interface RoomMetadata {
   header: string;
   subtitle?: string;
   url?: string;
+  imageUrl?: string;
 }
 
 export interface RoomInfo {
@@ -40,6 +41,7 @@ export async function setMetadata(
     header: metadata.header,
     subtitle: metadata.subtitle ?? "",
     url: metadata.url ?? "",
+    imageUrl: metadata.imageUrl ?? "",
   });
 
   const ttlSeconds =
@@ -62,6 +64,7 @@ export async function getMetadata(
     header: raw["header"]!,
     subtitle: raw["subtitle"] || undefined,
     url: raw["url"] || undefined,
+    imageUrl: raw["imageUrl"] || undefined,
   };
 }
 
