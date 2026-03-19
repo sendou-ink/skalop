@@ -15,6 +15,7 @@ export interface RoomMetadata {
   subtitle?: string;
   url?: string;
   imageUrl?: string;
+  createdAt?: number;
 }
 
 export interface RoomInfo {
@@ -44,6 +45,12 @@ export async function setMetadata(
     imageUrl: metadata.imageUrl ?? "",
   });
 
+  await redis.hsetnx(
+    key,
+    "createdAt",
+    String(metadata.createdAt ?? Date.now())
+  );
+
   const ttlSeconds =
     Math.floor((metadata.expiresAt - Date.now()) / 1000) + ONE_WEEK_SECONDS;
   if (ttlSeconds > 0) {
@@ -65,6 +72,7 @@ export async function getMetadata(
     subtitle: raw["subtitle"] || undefined,
     url: raw["url"] || undefined,
     imageUrl: raw["imageUrl"] || undefined,
+    createdAt: raw["createdAt"] ? Number(raw["createdAt"]) : undefined,
   };
 }
 
