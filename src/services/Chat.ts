@@ -12,15 +12,16 @@ export interface ChatMessage {
 }
 
 interface ChatService {
-  saveMessage(message: ChatMessage): Promise<void>;
+  saveMessage(message: ChatMessage): Promise<number>;
   getMessages(room: string): Promise<ChatMessage[]>;
 }
 
 const getKey = (message: ChatMessage) => `chat__${message.room}`;
 
 const saveMessage: ChatService["saveMessage"] = async (message) => {
-  await redis.rpush(getKey(message), JSON.stringify(message));
+  const count = await redis.rpush(getKey(message), JSON.stringify(message));
   await redis.expire(getKey(message), 60 * 60 * 24 * 30); // 30 days, refreshes on new messages
+  return count;
 };
 
 const getMessages: ChatService["getMessages"] = async (room) => {
@@ -35,4 +36,18 @@ const getMessages: ChatService["getMessages"] = async (room) => {
   return rawMessages.map((msg) => JSON.parse(msg));
 };
 
-export { saveMessage, getMessages };
+const getLastMessageTimestamp = async (
+  room: string
+): Promise<number | null> => {
+  const raw = await redis.lindex(`chat__${room}`, -1);
+  if (!raw) return null;
+
+  const msg = JSON.parse(raw);
+  return msg.timestamp ?? null;
+};
+
+const getMessageCount = async (room: string): Promise<number> => {
+  return redis.llen(`chat__${room}`);
+};
+
+export { saveMessage, getMessages, getLastMessageTimestamp, getMessageCount };
