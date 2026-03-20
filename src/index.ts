@@ -5,7 +5,7 @@ import * as Chat from "./services/Chat";
 import * as Room from "./services/Room";
 import type { RoomInfo } from "./services/Room";
 import invariant from "tiny-invariant";
-import { msgShouldBePersisted, isRoomExpired } from "./utils";
+import { msgShouldBePersisted, isRoomExpired, parseChatCodes } from "./utils";
 
 const MESSAGE_MAX_LENGTH = 200;
 
@@ -216,21 +216,23 @@ const server = Bun.serve<WsData>({
       }
 
       if (event === "SUBSCRIBE") {
-        const { chatCode } = parsed;
-        ws.subscribe(chatCode);
-        const [messages, metadata] = await Promise.all([
-          Chat.getMessages(chatCode),
-          Room.getMetadata(chatCode),
-        ]);
-        ws.send(
-          JSON.stringify({ event: "CHAT_HISTORY", chatCode, messages, metadata })
-        );
+        for (const chatCode of parseChatCodes(parsed.chatCode)) {
+          ws.subscribe(chatCode);
+          const [messages, metadata] = await Promise.all([
+            Chat.getMessages(chatCode),
+            Room.getMetadata(chatCode),
+          ]);
+          ws.send(
+            JSON.stringify({ event: "CHAT_HISTORY", chatCode, messages, metadata })
+          );
+        }
         return;
       }
 
       if (event === "UNSUBSCRIBE") {
-        const { chatCode } = parsed;
-        ws.unsubscribe(chatCode);
+        for (const chatCode of parseChatCodes(parsed.chatCode)) {
+          ws.unsubscribe(chatCode);
+        }
         return;
       }
 
