@@ -217,11 +217,15 @@ const server = Bun.serve<WsData>({
 
       if (event === "SUBSCRIBE") {
         for (const chatCode of parseChatCodes(parsed.chatCode)) {
+          const metadata = await Room.getMetadata(chatCode);
+          // Participants receive messages via user channel,
+          // they fetch history explicitly via CHAT_HISTORY event.
+          // Sometimes participant might call SUBSCRIBE
+          // due to a race condition
+          if (metadata?.participantUserIds.includes(ws.data.userId)) continue;
+
           ws.subscribe(chatCode);
-          const [messages, metadata] = await Promise.all([
-            Chat.getMessages(chatCode),
-            Room.getMetadata(chatCode),
-          ]);
+          const messages = await Chat.getMessages(chatCode);
           ws.send(
             JSON.stringify({ event: "CHAT_HISTORY", chatCode, messages, metadata })
           );
