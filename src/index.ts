@@ -222,7 +222,7 @@ const server = Bun.serve<WsData>({
           // they fetch history explicitly via CHAT_HISTORY event.
           // Sometimes participant might call SUBSCRIBE
           // due to a race condition
-          if (metadata?.participantUserIds.includes(ws.data.userId)) continue;
+          if (!metadata || metadata.participantUserIds.includes(ws.data.userId)) continue;
 
           ws.subscribe(chatCode);
           const messages = await Chat.getMessages(chatCode);
