@@ -9,6 +9,21 @@ import { msgShouldBePersisted, isRoomExpired, parseChatCodes } from "./utils";
 
 const MESSAGE_MAX_LENGTH = 200;
 
+/**
+ * Topics are lightweight pub/sub channels without room metadata, history or
+ * participants. Used by sendou.ink for `revalidateOnly` broadcasts (e.g. live
+ * bracket updates). Any authenticated WS client may subscribe, so the prefix
+ * allow-list prevents subscribing to channels that carry private data (chat
+ * codes, `user__*`).
+ */
+const ALLOWED_TOPIC_PREFIXES = ["tournament__", "match__"];
+function isAllowedTopic(topic: unknown): topic is string {
+  return (
+    typeof topic === "string" &&
+    ALLOWED_TOPIC_PREFIXES.some((prefix) => topic.startsWith(prefix))
+  );
+}
+
 type WsData = { authToken: string; userId: number };
 
 /** userId -> set of active websocket connections */
@@ -236,6 +251,20 @@ const server = Bun.serve<WsData>({
       if (event === "UNSUBSCRIBE") {
         for (const chatCode of parseChatCodes(parsed.chatCode)) {
           ws.unsubscribe(chatCode);
+        }
+        return;
+      }
+
+      if (event === "SUBSCRIBE_TOPIC") {
+        if (isAllowedTopic(parsed.topic)) {
+          ws.subscribe(parsed.topic);
+        }
+        return;
+      }
+
+      if (event === "UNSUBSCRIBE_TOPIC") {
+        if (isAllowedTopic(parsed.topic)) {
+          ws.unsubscribe(parsed.topic);
         }
         return;
       }
