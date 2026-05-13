@@ -7,6 +7,7 @@ export interface ChatMessage {
   revalidateOnly?: boolean;
   context?: any;
   userId?: number;
+  authorUserId?: number;
   timestamp: number;
   room: string;
 }
