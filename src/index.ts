@@ -12,11 +12,17 @@ const MESSAGE_MAX_LENGTH = 200;
 /**
  * Topics are lightweight pub/sub channels without room metadata, history or
  * participants. Used by sendou.ink for `revalidateOnly` broadcasts (e.g. live
- * bracket updates). Any authenticated WS client may subscribe, so the prefix
- * allow-list prevents subscribing to channels that carry private data (chat
- * codes, `user__*`).
+ * bracket updates, the SendouQ looking pool and per-group updates). Any
+ * authenticated WS client may subscribe, so the prefix allow-list prevents
+ * subscribing to channels that carry private data (chat codes, `user__*`).
+ * Listed topics must only ever carry contentless `revalidateOnly` messages.
  */
-const ALLOWED_TOPIC_PREFIXES = ["tournament__", "match__"];
+const ALLOWED_TOPIC_PREFIXES = [
+  "tournament__",
+  "match__",
+  "sq-looking",
+  "sq-group__",
+];
 function isAllowedTopic(topic: unknown): topic is string {
   return (
     typeof topic === "string" &&
