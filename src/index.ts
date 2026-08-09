@@ -145,6 +145,17 @@ const server = Bun.serve<WsData>({
         return new Response(null, { status: 200 });
       }
 
+      if (action === "notifyUsers") {
+        const { userIds } = body as { userIds: number[] };
+
+        const payload = JSON.stringify({ event: "NOTIFICATIONS_CHANGED" });
+        for (const userId of userIds) {
+          server.publish(`user__${userId}`, payload);
+        }
+
+        return new Response(null, { status: 200 });
+      }
+
       if (action === "removeRoom") {
         const { chatCode } = body as { chatCode: string };
 
