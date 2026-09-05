@@ -1,5 +1,7 @@
 # Skalop
 
+Note: project is deprecated. Functionality now lives in sendou.ink main repository https://github.com/sendou-ink/sendou.ink/commit/980d5c43c0287217852fe966b47183ac06c5550f
+
 Chat microservice for sendou.ink
 
 ## Getting started
